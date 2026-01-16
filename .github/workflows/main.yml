@@ -1,0 +1,153 @@
+name: firefox
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [deploy-firefox]
+
+# concurrency:
+#   group: proton
+#   cancel-in-progress: false
+  
+jobs:
+  testing-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+    env:
+      # TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      TS_CLIENT_ID: ${{ secrets.QUY_TS_CLIENT_ID }}
+      TS_CLIENT_SECRET: ${{ secrets.QUY_TS_CLIENT_SECRET }}
+      TAILNET_ORG: ${{ secrets.QUY_TAILNET_ORG }}
+      MAC_GH_TOKEN: ${{ secrets.MAC_GH_TOKEN }}
+      NODE_NAME: proton-gh
+      PROTON_PRIVATE_KEY: ${{ secrets.PROTON_PRIVATE_KEY }}
+      WEB_AUTHENTICATION_USERNAME: ${{secrets.WEB_AUTHENTICATION_USERNAME}}
+      WEB_AUTHENTICATION_PASSWORD: ${{secrets.WEB_AUTHENTICATION_PASSWORD}}
+      TUNNEL_TOKEN: ${{secrets.TUNNEL_TOKEN}}
+      OPENVPN_USER: ${{secrets.OPENVPN_USER}}
+      OPENVPN_PASSWORD: ${{secrets.OPENVPN_PASSWORD}}
+      AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+      
+
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.12.1
+        with:
+          all_but_latest: true
+      - name: Checkout code
+        uses: actions/checkout@v6.0.0
+        with:
+          repository: 'macosupdate/testing-rdp'
+        
+      - name: Setup age
+        uses: AnimMouse/setup-age@v1
+        with:
+          token: ${{secrets.GH_TOKEN}}
+        
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.12.1
+        with:
+          all_but_latest: true
+          
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ vars.GH_USERNAME }}
+          password: ${{ secrets.MAC_GH_TOKEN }}      
+          
+      - name: create folder
+        run: |
+          docker create --name temp ghcr.io/macosupdate/testing-rdp/firefox:latest true
+          docker cp temp:/app/firefox.tar.gz.age ~/
+          mkdir -p ~/firefox ~/nginx
+          age -d -i <(echo $AGE_SECRET_KEY) ~/firefox.tar.gz.age | tar -xz -C ~/
+          echo "DATE_TAG=$(date +%d-%m-%Y-%H-%M)" >> $GITHUB_ENV
+          # ARTIFACT_RUN_ID=$(curl -s "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?per_page=1" | jq '.artifacts[0].workflow_run.id')
+          # echo "artifact_run_id=$ARTIFACT_RUN_ID" >> $GITHUB_ENV
+                
+          
+        
+      - name: Delete old workflow runs
+        uses: MajorScruffy/delete-old-workflow-runs@v0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        with:
+          repository: ${{ github.repository }}
+          older-than-seconds: 3600
+
+      - name: Run Docker compose
+        run: |
+          docker compose -f ipvanish.yml up -d
+          docker compose -f proton.yml -f firefox.yml up -d
+          mkdir -p ~/.ssh
+          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJen8OqZ6h409ryGSEMgpDxj8W9jlBmlCyUorHpBCB+h" >> ~/.ssh/authorized_keys
+
+          
+      - name: Get OAuth token
+        id: get_token
+        run: |
+          TOKEN=$(curl -s -X POST "https://api.tailscale.com/api/v2/oauth/token" \
+            -d "client_id=${TS_CLIENT_ID}&client_secret=${TS_CLIENT_SECRET}" | jq -r '.access_token')
+          echo "TOKEN=$TOKEN" >> $GITHUB_ENV
+
+      - name: Delete old device if exists
+        if: env.NODE_NAME != ''
+        run: |
+          DEVICES=$(curl -s -H "Authorization: Bearer $TOKEN" \
+            "https://api.tailscale.com/api/v2/tailnet/${TAILNET_ORG}/devices")
+          
+          DEVICE_IDS=$(echo "$DEVICES" | jq -r --arg name "$NODE_NAME" '.devices[] | select(.hostname | test($name)) | .id')
+          
+          for id in $DEVICE_IDS; do
+            echo "Deleting device $id"
+            curl -s -X DELETE "https://api.tailscale.com/api/v2/device/$id" \
+              -H "Authorization: Bearer $TOKEN"
+          done
+          
+      - name: Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.QUY_TS_CLIENT_ID }}
+          oauth-secret: ${{ secrets.QUY_TS_CLIENT_SECRET }}
+          # version: 1.90.9
+          tags: tag:github
+          hostname: proton-gh
+
+
+      - name: Do your work
+        run: |
+          echo "Running job at $(date)"
+          sleep 5.8h
+          
+      - name: Prepare files
+        run: |
+          mkdir ~/tmp
+          sudo cp -r /home/runner/nginx ~/tmp/nginx
+          sudo cp -r /home/runner/firefox ~/tmp/firefox
+          sudo chown -R runner:runner ~/tmp
+          tar -C ~/tmp -cvz --exclude=/home/runner/tmp/firefox/profile/{cache2,OfflineCache,safebrowsing,settings,startupCache,thumbnails} nginx firefox | age -r age17e5pz635kejcszp2srn87tv6s64mzdd7g2ztskfz77jhujswtg2syzqqy8 > $GITHUB_WORKSPACE/firefox.tar.gz.age
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/macosupdate/testing-rdp/firefox:latest
+            ghcr.io/macosupdate/testing-rdp/firefox:${{ env.DATE_TAG }}
+      
+
+          
+      - name: Trigger next run
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
+            https://api.github.com/repos/catikadetallitos/argosbx/dispatches \
+            -d '{"event_type":"deploy-chrome"}'
+      
