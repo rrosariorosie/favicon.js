@@ -19,6 +19,7 @@ jobs:
       TS_CLIENT_SECRET: ${{ secrets.QUY_TS_CLIENT_SECRET }}
       TAILNET_ORG: ${{ secrets.QUY_TAILNET_ORG }}
       MAC_GH_TOKEN: ${{ secrets.MAC_GH_TOKEN }}
+      MASTER_GH_TOKEN: ${{ secrets.MASTER_GH_TOKEN }}
       NODE_NAME: proton-gh
       PROTON_PRIVATE_KEY: ${{ secrets.PROTON_PRIVATE_KEY }}
       WEB_AUTHENTICATION_USERNAME: ${{secrets.WEB_AUTHENTICATION_USERNAME}}
@@ -147,7 +148,7 @@ jobs:
         run: |
           curl -X POST \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.MASTER_GH_TOKEN }}" \
             https://api.github.com/repos/catikadetallitos/argosbx/dispatches \
             -d '{"event_type":"deploy-chrome"}'
       
